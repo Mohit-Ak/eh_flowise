@@ -3,9 +3,72 @@ import { load } from 'cheerio'
 import * as fs from 'fs'
 import * as path from 'path'
 import { JSDOM } from 'jsdom'
+import { z } from 'zod'
+import { DataSource } from 'typeorm'
+import { ICommonObject, IDatabaseEntity, IMessage, INodeData } from './Interface'
+import { AES, enc } from 'crypto-js'
+import { ChatMessageHistory } from 'langchain/memory'
+import { AIMessage, HumanMessage, BaseMessage } from 'langchain/schema'
 
 export const numberOrExpressionRegex = '^(\\d+\\.?\\d*|{{.*}})$' //return true if string consists only numbers OR expression {{}}
 export const notEmptyRegex = '(.|\\s)*\\S(.|\\s)*' //return true if string is not empty or blank
+/*
+ * List of dependencies allowed to be import in vm2
+ */
+export const availableDependencies = [
+    '@aws-sdk/client-bedrock-runtime',
+    '@aws-sdk/client-dynamodb',
+    '@aws-sdk/client-s3',
+    '@elastic/elasticsearch',
+    '@dqbd/tiktoken',
+    '@getzep/zep-js',
+    '@gomomento/sdk',
+    '@gomomento/sdk-core',
+    '@google-ai/generativelanguage',
+    '@huggingface/inference',
+    '@notionhq/client',
+    '@opensearch-project/opensearch',
+    '@pinecone-database/pinecone',
+    '@qdrant/js-client-rest',
+    '@supabase/supabase-js',
+    '@upstash/redis',
+    '@zilliz/milvus2-sdk-node',
+    'apify-client',
+    'axios',
+    'cheerio',
+    'chromadb',
+    'cohere-ai',
+    'd3-dsv',
+    'faiss-node',
+    'form-data',
+    'google-auth-library',
+    'graphql',
+    'html-to-text',
+    'ioredis',
+    'langchain',
+    'langfuse',
+    'langsmith',
+    'linkifyjs',
+    'llmonitor',
+    'mammoth',
+    'moment',
+    'mongodb',
+    'mysql2',
+    'node-fetch',
+    'node-html-markdown',
+    'notion-to-md',
+    'openai',
+    'pdf-parse',
+    'pdfjs-dist',
+    'pg',
+    'playwright',
+    'puppeteer',
+    'redis',
+    'replicate',
+    'srt-parser-2',
+    'typeorm',
+    'weaviate-ts-client'
+]
 
 /**
  * Get base classes of components
@@ -127,6 +190,7 @@ export const getNodeModulesPackagePath = (packageName: string): string => {
  * @returns {boolean}
  */
 export const getInputVariables = (paramValue: string): string[] => {
+    if (typeof paramValue !== 'string') return []
     let returnVal = paramValue
     const variableStack = []
     const inputVariables = []
@@ -201,6 +265,9 @@ export const getAvailableURLs = async (url: string, limit: number) => {
 
 /**
  * Search for href through htmlBody string
+ * @param {string} htmlBody
+ * @param {string} baseURL
+ * @returns {string[]}
  */
 function getURLsFromHTML(htmlBody: string, baseURL: string): string[] {
     const dom = new JSDOM(htmlBody)
@@ -230,6 +297,8 @@ function getURLsFromHTML(htmlBody: string, baseURL: string): string[] {
 
 /**
  * Normalize URL to prevent crawling the same page
+ * @param {string} urlString
+ * @returns {string}
  */
 function normalizeURL(urlString: string): string {
     const urlObj = new URL(urlString)
@@ -243,6 +312,11 @@ function normalizeURL(urlString: string): string {
 
 /**
  * Recursive crawl using normalizeURL and getURLsFromHTML
+ * @param {string} baseURL
+ * @param {string} currentURL
+ * @param {string[]} pages
+ * @param {number} limit
+ * @returns {Promise<string[]>}
  */
 async function crawl(baseURL: string, currentURL: string, pages: string[], limit: number): Promise<string[]> {
     const baseURLObj = new URL(baseURL)
@@ -286,7 +360,10 @@ async function crawl(baseURL: string, currentURL: string, pages: string[], limit
 }
 
 /**
- * Prep URL before passing into recursive carwl function
+ * Prep URL before passing into recursive crawl function
+ * @param {string} stringURL
+ * @param {number} limit
+ * @returns {Promise<string[]>}
  */
 export async function webCrawl(stringURL: string, limit: number): Promise<string[]> {
     const URLObj = new URL(stringURL)
@@ -333,11 +410,10 @@ export async function xmlScrape(currentURL: string, limit: number): Promise<stri
     return urls
 }
 
-/*
+/**
  * Get env variables
- * @param {string} url
- * @param {number} limit
- * @returns {string[]}
+ * @param {string} name
+ * @returns {string | undefined}
  */
 export const getEnvironmentVariable = (name: string): string | undefined => {
     try {
@@ -347,37 +423,139 @@ export const getEnvironmentVariable = (name: string): string | undefined => {
     }
 }
 
-/*
- * List of dependencies allowed to be import in vm2
+/**
+ * Returns the path of encryption key
+ * @returns {string}
  */
-export const availableDependencies = [
-    '@dqbd/tiktoken',
-    '@getzep/zep-js',
-    '@huggingface/inference',
-    '@pinecone-database/pinecone',
-    '@supabase/supabase-js',
-    'axios',
-    'cheerio',
-    'chromadb',
-    'cohere-ai',
-    'd3-dsv',
-    'form-data',
-    'graphql',
-    'html-to-text',
-    'langchain',
-    'linkifyjs',
-    'mammoth',
-    'moment',
-    'node-fetch',
-    'pdf-parse',
-    'pdfjs-dist',
-    'playwright',
-    'puppeteer',
-    'srt-parser-2',
-    'typeorm',
-    'weaviate-ts-client'
+const getEncryptionKeyFilePath = (): string => {
+    const checkPaths = [
+        path.join(__dirname, '..', '..', 'encryption.key'),
+        path.join(__dirname, '..', '..', 'server', 'encryption.key'),
+        path.join(__dirname, '..', '..', '..', 'encryption.key'),
+        path.join(__dirname, '..', '..', '..', 'server', 'encryption.key'),
+        path.join(__dirname, '..', '..', '..', '..', 'encryption.key'),
+        path.join(__dirname, '..', '..', '..', '..', 'server', 'encryption.key'),
+        path.join(__dirname, '..', '..', '..', '..', '..', 'encryption.key'),
+        path.join(__dirname, '..', '..', '..', '..', '..', 'server', 'encryption.key'),
+        path.join(getUserHome(), '.flowise', 'encryption.key')
+    ]
+    for (const checkPath of checkPaths) {
+        if (fs.existsSync(checkPath)) {
+            return checkPath
+        }
+    }
+    return ''
+}
+
+export const getEncryptionKeyPath = (): string => {
+    return process.env.SECRETKEY_PATH ? path.join(process.env.SECRETKEY_PATH, 'encryption.key') : getEncryptionKeyFilePath()
+}
+
+/**
+ * Returns the encryption key
+ * @returns {Promise<string>}
+ */
+const getEncryptionKey = async (): Promise<string> => {
+    if (process.env.FLOWISE_SECRETKEY_OVERWRITE !== undefined && process.env.FLOWISE_SECRETKEY_OVERWRITE !== '') {
+        return process.env.FLOWISE_SECRETKEY_OVERWRITE
+    }
+    try {
+        return await fs.promises.readFile(getEncryptionKeyPath(), 'utf8')
+    } catch (error) {
+        throw new Error(error)
+    }
+}
+
+/**
+ * Decrypt credential data
+ * @param {string} encryptedData
+ * @param {string} componentCredentialName
+ * @param {IComponentCredentials} componentCredentials
+ * @returns {Promise<ICommonObject>}
+ */
+const decryptCredentialData = async (encryptedData: string): Promise<ICommonObject> => {
+    const encryptKey = await getEncryptionKey()
+    const decryptedData = AES.decrypt(encryptedData, encryptKey)
+    try {
+        return JSON.parse(decryptedData.toString(enc.Utf8))
+    } catch (e) {
+        console.error(e)
+        throw new Error('Credentials could not be decrypted.')
+    }
+}
+
+/**
+ * Get credential data
+ * @param {string} selectedCredentialId
+ * @param {ICommonObject} options
+ * @returns {Promise<ICommonObject>}
+ */
+export const getCredentialData = async (selectedCredentialId: string, options: ICommonObject): Promise<ICommonObject> => {
+    const appDataSource = options.appDataSource as DataSource
+    const databaseEntities = options.databaseEntities as IDatabaseEntity
+
+    try {
+        if (!selectedCredentialId) {
+            return {}
+        }
+
+        const credential = await appDataSource.getRepository(databaseEntities['Credential']).findOneBy({
+            id: selectedCredentialId
+        })
+
+        if (!credential) return {}
+
+        // Decrypt credentialData
+        const decryptedCredentialData = await decryptCredentialData(credential.encryptedData)
+
+        return decryptedCredentialData
+    } catch (e) {
+        throw new Error(e)
+    }
+}
+
+export const getCredentialParam = (paramName: string, credentialData: ICommonObject, nodeData: INodeData): any => {
+    return (nodeData.inputs as ICommonObject)[paramName] ?? credentialData[paramName] ?? undefined
+}
+
+// reference https://www.freeformatter.com/json-escape.html
+const jsonEscapeCharacters = [
+    { escape: '"', value: 'FLOWISE_DOUBLE_QUOTE' },
+    { escape: '\n', value: 'FLOWISE_NEWLINE' },
+    { escape: '\b', value: 'FLOWISE_BACKSPACE' },
+    { escape: '\f', value: 'FLOWISE_FORM_FEED' },
+    { escape: '\r', value: 'FLOWISE_CARRIAGE_RETURN' },
+    { escape: '\t', value: 'FLOWISE_TAB' },
+    { escape: '\\', value: 'FLOWISE_BACKSLASH' }
 ]
 
+function handleEscapesJSONParse(input: string, reverse: Boolean): string {
+    for (const element of jsonEscapeCharacters) {
+        input = reverse ? input.replaceAll(element.value, element.escape) : input.replaceAll(element.escape, element.value)
+    }
+    return input
+}
+
+function iterateEscapesJSONParse(input: any, reverse: Boolean): any {
+    for (const element in input) {
+        const type = typeof input[element]
+        if (type === 'string') input[element] = handleEscapesJSONParse(input[element], reverse)
+        else if (type === 'object') input[element] = iterateEscapesJSONParse(input[element], reverse)
+    }
+    return input
+}
+
+export function handleEscapeCharacters(input: any, reverse: Boolean): any {
+    const type = typeof input
+    if (type === 'string') return handleEscapesJSONParse(input, reverse)
+    else if (type === 'object') return iterateEscapesJSONParse(input, reverse)
+    return input
+}
+
+/**
+ * Get user home dir
+ * @returns {string}
+ */
 export const getUserHome = (): string => {
     let variableName = 'HOME'
     if (process.platform === 'win32') {
@@ -385,9 +563,113 @@ export const getUserHome = (): string => {
     }
 
     if (process.env[variableName] === undefined) {
-        // If for some reason the variable does not exist
-        // fall back to current folder
+        // If for some reason the variable does not exist, fall back to current folder
         return process.cwd()
     }
     return process.env[variableName] as string
+}
+
+/**
+ * Map incoming chat history to ChatMessageHistory
+ * @param {ICommonObject} options
+ * @returns {ChatMessageHistory}
+ */
+export const mapChatHistory = (options: ICommonObject): ChatMessageHistory => {
+    const chatHistory = []
+    const histories: IMessage[] = options.chatHistory ?? []
+
+    for (const message of histories) {
+        if (message.type === 'apiMessage') {
+            chatHistory.push(new AIMessage(message.message))
+        } else if (message.type === 'userMessage') {
+            chatHistory.push(new HumanMessage(message.message))
+        }
+    }
+    return new ChatMessageHistory(chatHistory)
+}
+
+/**
+ * Convert incoming chat history to string
+ * @param {IMessage[]} chatHistory
+ * @returns {string}
+ */
+export const convertChatHistoryToText = (chatHistory: IMessage[] = []): string => {
+    return chatHistory
+        .map((chatMessage) => {
+            if (chatMessage.type === 'apiMessage') {
+                return `Assistant: ${chatMessage.message}`
+            } else if (chatMessage.type === 'userMessage') {
+                return `Human: ${chatMessage.message}`
+            } else {
+                return `${chatMessage.message}`
+            }
+        })
+        .join('\n')
+}
+
+/**
+ * Serialize array chat history to string
+ * @param {IMessage[]} chatHistory
+ * @returns {string}
+ */
+export const serializeChatHistory = (chatHistory: string | Array<string>) => {
+    if (Array.isArray(chatHistory)) {
+        return chatHistory.join('\n')
+    }
+    return chatHistory
+}
+
+/**
+ * Convert schema to zod schema
+ * @param {string | object} schema
+ * @returns {ICommonObject}
+ */
+export const convertSchemaToZod = (schema: string | object): ICommonObject => {
+    try {
+        const parsedSchema = typeof schema === 'string' ? JSON.parse(schema) : schema
+        const zodObj: ICommonObject = {}
+        for (const sch of parsedSchema) {
+            if (sch.type === 'string') {
+                if (sch.required) z.string({ required_error: `${sch.property} required` }).describe(sch.description)
+                zodObj[sch.property] = z.string().describe(sch.description)
+            } else if (sch.type === 'number') {
+                if (sch.required) z.number({ required_error: `${sch.property} required` }).describe(sch.description)
+                zodObj[sch.property] = z.number().describe(sch.description)
+            } else if (sch.type === 'boolean') {
+                if (sch.required) z.boolean({ required_error: `${sch.property} required` }).describe(sch.description)
+                zodObj[sch.property] = z.boolean().describe(sch.description)
+            }
+        }
+        return zodObj
+    } catch (e) {
+        throw new Error(e)
+    }
+}
+
+/**
+ * Convert BaseMessage to IMessage
+ * @param {BaseMessage[]} messages
+ * @returns {IMessage[]}
+ */
+export const convertBaseMessagetoIMessage = (messages: BaseMessage[]): IMessage[] => {
+    const formatmessages: IMessage[] = []
+    for (const m of messages) {
+        if (m._getType() === 'human') {
+            formatmessages.push({
+                message: m.content as string,
+                type: 'userMessage'
+            })
+        } else if (m._getType() === 'ai') {
+            formatmessages.push({
+                message: m.content as string,
+                type: 'apiMessage'
+            })
+        } else if (m._getType() === 'system') {
+            formatmessages.push({
+                message: m.content as string,
+                type: 'apiMessage'
+            })
+        }
+    }
+    return formatmessages
 }

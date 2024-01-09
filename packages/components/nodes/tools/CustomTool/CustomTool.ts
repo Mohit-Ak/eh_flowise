@@ -1,5 +1,5 @@
 import { ICommonObject, IDatabaseEntity, INode, INodeData, INodeOptionsValue, INodeParams } from '../../../src/Interface'
-import { getBaseClasses } from '../../../src/utils'
+import { convertSchemaToZod, getBaseClasses } from '../../../src/utils'
 import { DynamicStructuredTool } from './core'
 import { z } from 'zod'
 import { DataSource } from 'typeorm'
@@ -7,6 +7,7 @@ import { DataSource } from 'typeorm'
 class CustomTool_Tools implements INode {
     label: string
     name: string
+    version: number
     description: string
     type: string
     icon: string
@@ -17,6 +18,7 @@ class CustomTool_Tools implements INode {
     constructor() {
         this.label = 'Custom Tool'
         this.name = 'customTool'
+        this.version = 1.0
         this.type = 'CustomTool'
         this.icon = 'customtool.svg'
         this.category = 'Tools'
@@ -34,7 +36,7 @@ class CustomTool_Tools implements INode {
 
     //@ts-ignore
     loadMethods = {
-        async listTools(nodeData: INodeData, options: ICommonObject): Promise<INodeOptionsValue[]> {
+        async listTools(_: INodeData, options: ICommonObject): Promise<INodeOptionsValue[]> {
             const returnData: INodeOptionsValue[] = []
 
             const appDataSource = options.appDataSource as DataSource
@@ -60,6 +62,7 @@ class CustomTool_Tools implements INode {
 
     async init(nodeData: INodeData, input: string, options: ICommonObject): Promise<any> {
         const selectedToolId = nodeData.inputs?.selectedTool as string
+        const customToolFunc = nodeData.inputs?.customToolFunc as string
 
         const appDataSource = options.appDataSource as DataSource
         const databaseEntities = options.databaseEntities as IDatabaseEntity
@@ -76,32 +79,40 @@ class CustomTool_Tools implements INode {
                 schema: z.object(convertSchemaToZod(tool.schema)),
                 code: tool.func
             }
-            return new DynamicStructuredTool(obj)
+            if (customToolFunc) obj.code = customToolFunc
+
+            const variables = await appDataSource.getRepository(databaseEntities['Variable']).find()
+
+            // override variables defined in overrideConfig
+            // nodeData.inputs.variables is an Object, check each property and override the variable
+            if (nodeData?.inputs?.vars) {
+                for (const propertyName of Object.getOwnPropertyNames(nodeData.inputs.vars)) {
+                    const foundVar = variables.find((v) => v.name === propertyName)
+                    if (foundVar) {
+                        // even if the variable was defined as runtime, we override it with static value
+                        foundVar.type = 'static'
+                        foundVar.value = nodeData.inputs.vars[propertyName]
+                    } else {
+                        // add it the variables, if not found locally in the db
+                        variables.push({ name: propertyName, type: 'static', value: nodeData.inputs.vars[propertyName] })
+                    }
+                }
+            }
+
+            const flow = {
+                chatId: options.chatId, // id is uppercase (I)
+                chatflowId: options.chatflowid, // id is lowercase (i)
+                input
+            }
+
+            let dynamicStructuredTool = new DynamicStructuredTool(obj)
+            dynamicStructuredTool.setVariables(variables)
+            dynamicStructuredTool.setFlowObject(flow)
+
+            return dynamicStructuredTool
         } catch (e) {
             throw new Error(e)
         }
-    }
-}
-
-const convertSchemaToZod = (schema: string) => {
-    try {
-        const parsedSchema = JSON.parse(schema)
-        const zodObj: any = {}
-        for (const sch of parsedSchema) {
-            if (sch.type === 'string') {
-                if (sch.required) z.string({ required_error: `${sch.property} required` }).describe(sch.description)
-                zodObj[sch.property] = z.string().describe(sch.description)
-            } else if (sch.type === 'number') {
-                if (sch.required) z.number({ required_error: `${sch.property} required` }).describe(sch.description)
-                zodObj[sch.property] = z.number().describe(sch.description)
-            } else if (sch.type === 'boolean') {
-                if (sch.required) z.boolean({ required_error: `${sch.property} required` }).describe(sch.description)
-                zodObj[sch.property] = z.boolean().describe(sch.description)
-            }
-        }
-        return zodObj
-    } catch (e) {
-        throw new Error(e)
     }
 }
 

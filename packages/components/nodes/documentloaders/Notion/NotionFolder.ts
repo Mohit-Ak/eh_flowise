@@ -5,6 +5,7 @@ import { NotionLoader } from 'langchain/document_loaders/fs/notion'
 class NotionFolder_DocumentLoaders implements INode {
     label: string
     name: string
+    version: number
     description: string
     type: string
     icon: string
@@ -15,8 +16,9 @@ class NotionFolder_DocumentLoaders implements INode {
     constructor() {
         this.label = 'Notion Folder'
         this.name = 'notionFolder'
+        this.version = 1.0
         this.type = 'Document'
-        this.icon = 'notion.png'
+        this.icon = 'notion-folder.svg'
         this.category = 'Document Loaders'
         this.description = 'Load data from the exported and unzipped Notion folder'
         this.baseClasses = [this.type]

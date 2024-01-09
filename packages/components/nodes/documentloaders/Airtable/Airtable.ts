@@ -3,38 +3,41 @@ import { TextSplitter } from 'langchain/text_splitter'
 import { BaseDocumentLoader } from 'langchain/document_loaders/base'
 import { Document } from 'langchain/document'
 import axios from 'axios'
+import { getCredentialData, getCredentialParam } from '../../../src/utils'
 
 class Airtable_DocumentLoaders implements INode {
     label: string
     name: string
+    version: number
     description: string
     type: string
     icon: string
     category: string
     baseClasses: string[]
+    credential: INodeParams
     inputs?: INodeParams[]
 
     constructor() {
         this.label = 'Airtable'
         this.name = 'airtable'
+        this.version = 2.0
         this.type = 'Document'
         this.icon = 'airtable.svg'
         this.category = 'Document Loaders'
         this.description = `Load data from Airtable table`
         this.baseClasses = [this.type]
+        this.credential = {
+            label: 'Connect Credential',
+            name: 'credential',
+            type: 'credential',
+            credentialNames: ['airtableApi']
+        }
         this.inputs = [
             {
                 label: 'Text Splitter',
                 name: 'textSplitter',
                 type: 'TextSplitter',
                 optional: true
-            },
-            {
-                label: 'Personal Access Token',
-                name: 'accessToken',
-                type: 'password',
-                description:
-                    'Get personal access token from <a target="_blank" href="https://airtable.com/developers/web/guides/personal-access-tokens">official guide</a>'
             },
             {
                 label: 'Base Id',
@@ -53,6 +56,15 @@ class Airtable_DocumentLoaders implements INode {
                     'If your table URL looks like: https://airtable.com/app11RobdGoX0YNsC/tblJdmvbrgizbYICO/viw9UrP77Id0CE4ee, tblJdmvbrgizbYICO is the table id'
             },
             {
+                label: 'View Id',
+                name: 'viewId',
+                type: 'string',
+                placeholder: 'viw9UrP77Id0CE4ee',
+                description:
+                    'If your view URL looks like: https://airtable.com/app11RobdGoX0YNsC/tblJdmvbrgizbYICO/viw9UrP77Id0CE4ee, viw9UrP77Id0CE4ee is the view id',
+                optional: true
+            },
+            {
                 label: 'Return All',
                 name: 'returnAll',
                 type: 'boolean',
@@ -65,7 +77,6 @@ class Airtable_DocumentLoaders implements INode {
                 name: 'limit',
                 type: 'number',
                 default: 100,
-                step: 1,
                 additionalParams: true,
                 description: 'Number of results to return'
             },
@@ -78,24 +89,28 @@ class Airtable_DocumentLoaders implements INode {
             }
         ]
     }
-    async init(nodeData: INodeData): Promise<any> {
-        const accessToken = nodeData.inputs?.accessToken as string
+    async init(nodeData: INodeData, _: string, options: ICommonObject): Promise<any> {
         const baseId = nodeData.inputs?.baseId as string
         const tableId = nodeData.inputs?.tableId as string
+        const viewId = nodeData.inputs?.viewId as string
         const returnAll = nodeData.inputs?.returnAll as boolean
         const limit = nodeData.inputs?.limit as string
         const textSplitter = nodeData.inputs?.textSplitter as TextSplitter
         const metadata = nodeData.inputs?.metadata
 
-        const options: AirtableLoaderParams = {
+        const credentialData = await getCredentialData(nodeData.credential ?? '', options)
+        const accessToken = getCredentialParam('accessToken', credentialData, nodeData)
+
+        const airtableOptions: AirtableLoaderParams = {
             baseId,
             tableId,
+            viewId,
             returnAll,
             accessToken,
             limit: limit ? parseInt(limit, 10) : 100
         }
 
-        const loader = new AirtableLoader(options)
+        const loader = new AirtableLoader(airtableOptions)
 
         let docs = []
 
@@ -129,6 +144,7 @@ interface AirtableLoaderParams {
     baseId: string
     tableId: string
     accessToken: string
+    viewId?: string
     limit?: number
     returnAll?: boolean
 }
@@ -149,16 +165,19 @@ class AirtableLoader extends BaseDocumentLoader {
 
     public readonly tableId: string
 
+    public readonly viewId?: string
+
     public readonly accessToken: string
 
     public readonly limit: number
 
     public readonly returnAll: boolean
 
-    constructor({ baseId, tableId, accessToken, limit = 100, returnAll = false }: AirtableLoaderParams) {
+    constructor({ baseId, tableId, viewId, accessToken, limit = 100, returnAll = false }: AirtableLoaderParams) {
         super()
         this.baseId = baseId
         this.tableId = tableId
+        this.viewId = viewId
         this.accessToken = accessToken
         this.limit = limit
         this.returnAll = returnAll
@@ -199,7 +218,7 @@ class AirtableLoader extends BaseDocumentLoader {
     }
 
     private async loadLimit(): Promise<Document[]> {
-        const params = { maxRecords: this.limit }
+        const params = { maxRecords: this.limit, view: this.viewId }
         const data = await this.fetchAirtableData(`https://api.airtable.com/v0/${this.baseId}/${this.tableId}`, params)
         if (data.records.length === 0) {
             return []
@@ -208,7 +227,7 @@ class AirtableLoader extends BaseDocumentLoader {
     }
 
     private async loadAll(): Promise<Document[]> {
-        const params: ICommonObject = { pageSize: 100 }
+        const params: ICommonObject = { pageSize: 100, view: this.viewId }
         let data: AirtableLoaderResponse
         let returnPages: AirtableLoaderPage[] = []
 
